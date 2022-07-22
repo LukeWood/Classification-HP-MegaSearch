@@ -21,6 +21,8 @@ import os
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import wandb
+import keras_tuner
+import keras
 from absl import app
 from absl import flags
 from keras.callbacks import BackupAndRestore
@@ -28,12 +30,15 @@ from keras.callbacks import EarlyStopping
 from keras.callbacks import ModelCheckpoint
 from keras.callbacks import TensorBoard
 from keras.optimizers import Adam
+from keras_tuner import BayesianOptimization
 from tensorflow.keras.optimizers.schedules import PolynomialDecay
 from wandb.keras import WandbCallback
 from keras.layers import Resizing
 
 import keras_cv
 from keras_cv.models import DenseNet121
+
+tf.config.set_visible_devices([], "GPU")
 
 NUM_CLASSES = 101
 EPOCHS = 500
@@ -92,36 +97,49 @@ tensorboard = TensorBoard(log_dir=tensorboard_path)
 early_stopping = EarlyStopping(patience=10)
 callbacks = [backup, checkpoint, tensorboard, early_stopping]
 
-if _WANDB_PROJECT.value:
-    wandb.init(project='mega-grid-search', entity="keras-team-testing")
-    callbacks.append(WandbCallback())
+# Optional - for WandB integration
+#wandb.init(project='mega-grid-search', entity="keras-team-testing")
+#callbacks.append(WandbCallback())
+
+class MegaHyperModel(keras_tuner.HyperModel):
+    def build(self, hp):
+        model = keras.Sequential([
+            keras_cv.layers.RandAugment(value_range=[0,1], augmentations_per_image=hp.Int("augmentations_per_image", min_value=2, max_value=5, step=1), magnitude=hp.Float("magnitude", min_value=.05, max_value=.3, step=.05)),
+            DenseNet121(
+                include_rescaling=True,
+                include_top=True,
+                num_classes=NUM_CLASSES,
+                input_shape=(200, 200, 3),
+            )
+        ])
+        model.compile(
+            optimizer=Adam(
+                learning_rate=PolynomialDecay(
+                    initial_learning_rate=hp.Float("initial_learning_rate", min_value=.0005, max_value=.05, step=.0005),
+                    decay_steps=hp.Int("decay_steps", min_value=train.cardinality().numpy() * EPOCHS/10, max_value=train.cardinality().numpy() * EPOCHS, step=train.cardinality().numpy() * EPOCHS/1),
+                    end_learning_rate=hp.Float("initial_learning_rate", min_value=.00005, max_value=.0005, step=.00005),
+                )
+            ),
+            loss="categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        return model
+
+    def fit(self, hp, model, *args, **kwargs):
+        # No custom fit HP searching yet, but we could add it here
+        return model.fit(
+            *args,
+            **kwargs,
+        )
 
 with tf.distribute.MirroredStrategy().scope():
-    model = DenseNet121(
-        include_rescaling=True,
-        include_top=True,
-        num_classes=NUM_CLASSES,
-        input_shape=(200, 200, 3),
-    )
+    tuner = BayesianOptimization(MegaHyperModel(), objective='val_accuracy', max_trials=250)
+    tuner.search_space_summary()
 
-    model.compile(
-        optimizer=Adam(
-            learning_rate=PolynomialDecay(
-                initial_learning_rate=0.005,
-                decay_steps=train.cardinality().numpy() * EPOCHS,
-                end_learning_rate=0.0001,
-            )
-        ),
-        loss="categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-
-    model.fit(
+    tuner.search(
         train,
         batch_size=BATCH_SIZE,
         epochs=EPOCHS,
         callbacks=callbacks,
         validation_data=test,
     )
-
-    validation_metrics = model.evaluate(test, return_dict=True)
