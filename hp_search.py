@@ -19,6 +19,7 @@ import json
 import os
 
 import tensorflow as tf
+import tensorflow_datasets as tfds
 import wandb
 from absl import app
 from absl import flags
@@ -28,27 +29,31 @@ from keras.callbacks import ModelCheckpoint
 from keras.callbacks import TensorBoard
 from keras.optimizers import Adam
 from tensorflow.keras.optimizers.schedules import PolynomialDecay
-from utils import load_cats_and_dogs_dataset
 from wandb.keras import WandbCallback
+from keras.layers import Resizing
 
 import keras_cv
 from keras_cv.models import DenseNet121
 
-_GCS_BUCKET = flags.DEFINE_string("gcs_bucket", None, "Name of GCS Bucket")
-_EXPERIMENT_ID = flags.DEFINE_string(
-    "experiment_id", None, "An experiment name (preferably a git commit hash)"
-)
-_AUTHOR = flags.DEFINE_string(
-    "author", None, "The GitHub username of the author of this training script"
-)
-_WANDB_PROJECT = flags.DEFINE_string(
-    "wandb_project", None, "Optional, a WandB project for exporting training data"
-)
-
-NUM_CLASSES = 2
-EPOCHS = 250
+NUM_CLASSES = 101
+EPOCHS = 500
 BATCH_SIZE = 32
 WEIGHTS_PATH = "weights.hdf5"
+
+def load_caltech101(height=200, width=200, batch_size=32):
+    train_ds, test_ds = tfds.load(
+        "caltech101", split=["train", "test"], as_supervised=True
+    )
+    resizing = Resizing(width, height)
+    train = train_ds.map(
+        lambda x, y: (resizing(x), tf.one_hot(y, 101)),
+        num_parallel_calls=tf.data.AUTOTUNE,
+    ).batch(batch_size)
+    test = test_ds.map(
+        lambda x, y: (resizing(x), tf.one_hot(y, 101)),
+        num_parallel_calls=tf.data.AUTOTUNE,
+    ).batch(batch_size)
+    return train, test
 
 AUGMENT_LAYERS = [
     keras_cv.layers.RandomFlip(),
@@ -65,84 +70,58 @@ def augment(img, label):
     return inputs["images"], inputs["labels"]
 
 
-def main(argv):
-    assert _GCS_BUCKET.value
-    assert _EXPERIMENT_ID.value
-    assert _AUTHOR.value
+path_base = "./densenet/"
+backup_path = path_base + "backup/"
+weights_path = path_base + WEIGHTS_PATH
+tensorboard_path = path_base + "logs/"
 
-    gcs_path_base = f"gs://{_GCS_BUCKET.value}/densenet/{_EXPERIMENT_ID.value}/"
-    gcs_backup_path = gcs_path_base + "backup/"
-    gcs_weights_path = gcs_path_base + WEIGHTS_PATH
-    gcs_tensorboard_path = (
-        f"gs://{_GCS_BUCKET.value}/densenet/logs/{_EXPERIMENT_ID.value}/"
+train, test = load_caltech101()
+train = train.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
+train = train.prefetch(tf.data.AUTOTUNE)
+
+backup = BackupAndRestore(backup_path)
+checkpoint = ModelCheckpoint(
+    WEIGHTS_PATH,
+    monitor="val_accuracy",
+    verbose=1,
+    save_best_only=True,
+    save_weights_only=True,
+    mode="max",
+)
+tensorboard = TensorBoard(log_dir=tensorboard_path)
+early_stopping = EarlyStopping(patience=10)
+callbacks = [backup, checkpoint, tensorboard, early_stopping]
+
+if _WANDB_PROJECT.value:
+    wandb.init(project=_WANDB_PROJECT.value, entity="keras-team-testing")
+    callbacks.append(WandbCallback())
+
+with tf.distribute.MirroredStrategy().scope():
+    model = DenseNet121(
+        include_rescaling=True,
+        include_top=True,
+        num_classes=NUM_CLASSES,
+        input_shape=(200, 200, 3),
     )
 
-    train, test = load_cats_and_dogs_dataset(BATCH_SIZE)
-    train = train.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
-    train = train.prefetch(tf.data.AUTOTUNE)
-
-    gcs_backup = BackupAndRestore(gcs_backup_path)
-    local_checkpoint = ModelCheckpoint(
-        WEIGHTS_PATH,
-        monitor="val_accuracy",
-        verbose=1,
-        save_best_only=True,
-        save_weights_only=True,
-        mode="max",
+    model.compile(
+        optimizer=Adam(
+            learning_rate=PolynomialDecay(
+                initial_learning_rate=0.005,
+                decay_steps=train.cardinality().numpy() * EPOCHS,
+                end_learning_rate=0.0001,
+            )
+        ),
+        loss="categorical_crossentropy",
+        metrics=["accuracy"],
     )
-    tensorboard = TensorBoard(log_dir=gcs_tensorboard_path)
-    early_stopping = EarlyStopping(patience=10)
-    callbacks = [gcs_backup, local_checkpoint, tensorboard, early_stopping]
 
-    if _WANDB_PROJECT.value:
-        wandb.init(project=_WANDB_PROJECT.value, entity="keras-team-testing")
-        callbacks.append(WandbCallback())
+    model.fit(
+        train,
+        batch_size=BATCH_SIZE,
+        epochs=EPOCHS,
+        callbacks=callbacks,
+        validation_data=test,
+    )
 
-    with tf.distribute.MirroredStrategy().scope():
-        model = DenseNet121(
-            include_rescaling=True,
-            include_top=True,
-            num_classes=NUM_CLASSES,
-            input_shape=(150, 150, 3),
-        )
-
-        model.compile(
-            optimizer=Adam(
-                learning_rate=PolynomialDecay(
-                    initial_learning_rate=0.005,
-                    decay_steps=train.cardinality().numpy() * EPOCHS,
-                    end_learning_rate=0.0001,
-                )
-            ),
-            loss="categorical_crossentropy",
-            metrics=["accuracy"],
-        )
-
-        model.fit(
-            train,
-            batch_size=BATCH_SIZE,
-            epochs=EPOCHS,
-            callbacks=callbacks,
-            validation_data=test,
-        )
-
-        validation_metrics = model.evaluate(test, return_dict=True)
-
-    # In order to save only weights to GCS, we manually store weights locally
-    # (in our local_checkpoint callback) and then copy them to GCS using gsutil.
-    # In case storing weights in GCS fails, the weights are also stored locally.
-    os.system(f"gsutil cp {WEIGHTS_PATH} {gcs_weights_path}")
-
-    metadata = {
-        "experiment_id": _EXPERIMENT_ID.value,
-        "author": _AUTHOR.value,
-        "gcs_weights_path": gcs_weights_path,
-        "gcs_tensorboard_path": gcs_tensorboard_path,
-        "evaluation_metrics": validation_metrics,
-    }
-    with open("densenet.json", "w") as outfile:
-        json.dump(metadata, outfile)
-
-
-if __name__ == "__main__":
-    app.run(main)v
+    validation_metrics = model.evaluate(test, return_dict=True)
