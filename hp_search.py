@@ -93,7 +93,7 @@ early_stopping = EarlyStopping(patience=10)
 callbacks = [backup, checkpoint, tensorboard, early_stopping]
 
 if _WANDB_PROJECT.value:
-    wandb.init(project=_WANDB_PROJECT.value, entity="keras-team-testing")
+    wandb.init(project='mega-grid-search', entity="keras-team-testing")
     callbacks.append(WandbCallback())
 
 with tf.distribute.MirroredStrategy().scope():
