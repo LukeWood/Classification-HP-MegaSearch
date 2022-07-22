@@ -38,8 +38,6 @@ from keras.layers import Resizing
 import keras_cv
 from keras_cv.models import DenseNet121
 
-tf.config.set_visible_devices([], "GPU")
-
 NUM_CLASSES = 101
 EPOCHS = 500
 BATCH_SIZE = 32
