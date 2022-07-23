@@ -101,15 +101,12 @@ callbacks = [backup, checkpoint, tensorboard, early_stopping]
 
 class MegaHyperModel(keras_tuner.HyperModel):
     def build(self, hp):
-        model = keras.Sequential([
-            keras_cv.layers.RandAugment(value_range=[0,1], augmentations_per_image=hp.Int("augmentations_per_image", min_value=2, max_value=5, step=1), magnitude=hp.Float("magnitude", min_value=.05, max_value=.3, step=.05)),
-            DenseNet121(
-                include_rescaling=True,
-                include_top=True,
-                num_classes=NUM_CLASSES,
-                input_shape=(200, 200, 3),
-            )
-        ])
+        model = DenseNet121(
+                    include_rescaling=True,
+                    include_top=True,
+                    num_classes=NUM_CLASSES,
+                    input_shape=(200, 200, 3),
+                )
         model.compile(
             optimizer=Adam(
                 learning_rate=PolynomialDecay(
