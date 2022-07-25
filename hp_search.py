@@ -111,7 +111,7 @@ class MegaHyperModel(keras_tuner.HyperModel):
             optimizer=Adam(
                 learning_rate=PolynomialDecay(
                     initial_learning_rate=hp.Float("initial_learning_rate", min_value=.0005, max_value=.05, step=.0005),
-                    decay_steps=hp.Int("decay_steps", min_value=train.cardinality().numpy() * EPOCHS/10, max_value=train.cardinality().numpy() * EPOCHS, step=train.cardinality().numpy() * EPOCHS/1),
+                    decay_steps=hp.Int("decay_steps", min_value=train.cardinality().numpy() * EPOCHS/10, max_value=train.cardinality().numpy() * EPOCHS, step=train.cardinality().numpy() * EPOCHS/10),
                     end_learning_rate=hp.Float("initial_learning_rate", min_value=.00005, max_value=.0005, step=.00005),
                 )
             ),
