@@ -169,7 +169,7 @@ class MegaHyperModel(keras_tuner.HyperModel):
         if FLAGS.wandb:
             run = wandb.init(
                 entity=FLAGS.wandb_entity,
-                project=FLAGS.wandb_entity,
+                project=FLAGS.wandb_project,
                 config=hp.values,
                 name=model.name,
                 reinit=True,
@@ -186,16 +186,17 @@ class MegaHyperModel(keras_tuner.HyperModel):
         return history
 
 
-with tf.distribute.MirroredStrategy().scope():
-    tuner = BayesianOptimization(
-        MegaHyperModel(), objective="val_accuracy", max_trials=250
-    )
-    tuner.search_space_summary()
+if __name__ == '__main__':
+    with tf.distribute.MirroredStrategy().scope():
+        tuner = BayesianOptimization(
+            MegaHyperModel(), objective="val_accuracy", max_trials=250
+        )
+        tuner.search_space_summary()
 
-    tuner.search(
-        train,
-        batch_size=FLAGS.batch_size,
-        epochs=FLAGS.epochs,
-        callbacks=callbacks,
-        validation_data=test,
-    )
+        tuner.search(
+            train,
+            batch_size=FLAGS.batch_size,
+            epochs=FLAGS.epochs,
+            callbacks=callbacks,
+            validation_data=test,
+        )
