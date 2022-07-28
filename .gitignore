@@ -1,5 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+untitled_project/
+~/
 *.py[cod]
 *$py.class
 densenet/

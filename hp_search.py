@@ -43,7 +43,7 @@ from keras_cv.models import DenseNet121
 
 flags.DEFINE_boolean("wandb", False, "Whether or not to use wandb.")
 flags.DEFINE_string("wandb_entity", "keras-team-testing", "WandB entity to use")
-flags.DEFINE_string("wandb_project", "hp-mega-search", "WandB project ID to use")
+flags.DEFINE_string("wandb_project", "hp-mega-search-debug", "WandB project ID to use")
 flags.DEFINE_string(
     "experiment_name", None, "Experiment name to prepend to model names"
 )
@@ -167,7 +167,7 @@ class MegaHyperModel(keras_tuner.HyperModel):
     def fit(self, hp, model, *args, callbacks=(), **kwargs):
         # No custom fit HP searching yet, but we could add it here
         if FLAGS.wandb:
-            wandb.init(
+            run = wandb.init(
                 entity=FLAGS.wandb_entity,
                 project=FLAGS.wandb_entity,
                 config=hp.values,
@@ -175,11 +175,10 @@ class MegaHyperModel(keras_tuner.HyperModel):
                 reinit=True,
             )
             callbacks += [WandbCallback(save_model=False)]
+
         history = model.fit(
             *args,
             **kwargs,
-            steps_per_epoch=1,
-            validation_steps=1,
             callbacks=callbacks,
         )
         if FLAGS.wandb:
